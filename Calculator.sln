@@ -1,31 +1,528 @@
-﻿
-Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.9.34622.214
-MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Calculator", "Calculator\Calculator.vcxproj", "{31352EC6-EE39-46AE-AB3B-86D8E9E3CBF4}"
-EndProject
-Global
-	GlobalSection(SolutionConfigurationPlatforms) = preSolution
-		Debug|x64 = Debug|x64
-		Debug|x86 = Debug|x86
-		Release|x64 = Release|x64
-		Release|x86 = Release|x86
-	EndGlobalSection
-	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{31352EC6-EE39-46AE-AB3B-86D8E9E3CBF4}.Debug|x64.ActiveCfg = Debug|x64
-		{31352EC6-EE39-46AE-AB3B-86D8E9E3CBF4}.Debug|x64.Build.0 = Debug|x64
-		{31352EC6-EE39-46AE-AB3B-86D8E9E3CBF4}.Debug|x86.ActiveCfg = Debug|Win32
-		{31352EC6-EE39-46AE-AB3B-86D8E9E3CBF4}.Debug|x86.Build.0 = Debug|Win32
-		{31352EC6-EE39-46AE-AB3B-86D8E9E3CBF4}.Release|x64.ActiveCfg = Release|x64
-		{31352EC6-EE39-46AE-AB3B-86D8E9E3CBF4}.Release|x64.Build.0 = Release|x64
-		{31352EC6-EE39-46AE-AB3B-86D8E9E3CBF4}.Release|x86.ActiveCfg = Release|Win32
-		{31352EC6-EE39-46AE-AB3B-86D8E9E3CBF4}.Release|x86.Build.0 = Release|Win32
-	EndGlobalSection
-	GlobalSection(SolutionProperties) = preSolution
-		HideSolutionNode = FALSE
-	EndGlobalSection
-	GlobalSection(ExtensibilityGlobals) = postSolution
-		SolutionGuid = {CE791595-C30B-4950-AD9D-ACE0923CA6B5}
-	EndGlobalSection
-EndGlobal
+#include <sstream>
+#include <string>
+#include <windows.h>
+#include <stack>
+#include <iostream> // debugging
+#include <locale> // for std::locale
+#include <commctrl.h> // Include the common controls header for tab controls
+#include <vector>
+#include <iomanip> // Include this header for setw and setfill
+#pragma comment(lib, "Comctl32.lib") // Link the common controls library
+#define IDC_TRACE_EDIT 2000 // Define a unique ID for the trace EDIT control
+// Global variables
+HWND g_hWndTextBox; // Handle to the text box
+HWND g_hWndCalcDisplay;  // Handle to the calculator display
+HWND g_hWndTraceList;    // Handle to the trace list display
+HWND hWndTabControl = nullptr;
+std::wstring g_inputText; // String to store input text
+std::vector<std::wstring> g_traceLog; // To store the trace log entries
+bool g_clearDisplay = false; // Flag to indicate whether to clear the display on the next number press
+bool g_traceEnabled = false; // To keep track of the trace state
+static int decisionCount = 0;
+
+
+
+// Function to create a button
+HWND CreateButton(HWND hWndParent, LPCWSTR text, int x, int y, int width, int height, HINSTANCE hInstance, int id)
+{
+    return CreateWindowW( L"BUTTON", text, WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
+    x, y, width, height, hWndParent, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)), hInstance, nullptr);
+}
+
+// Function to create a button with custom font size
+HWND CreateButtonWithCustomFontSize(HWND hWndParent, LPCWSTR text, int x, int y, int width, int height, int fontSize, HINSTANCE hInstance, int id)
+{
+    // Create the button with desired dimensions and text style
+    HWND hWndButton = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 
+        x, y, width, height, hWndParent, (HMENU)id, hInstance, NULL);
+
+    // Get the device context of the button
+    HDC hdc = GetDC(hWndButton);
+
+    // Create a font with the desired font size
+    HFONT hFont = CreateFont(fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
+
+    // Set the font for the button text
+    SendMessage(hWndButton, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+    // Release the device context
+    ReleaseDC(hWndButton, hdc);
+
+    return hWndButton;
+}
+
+// Function to create the tab control
+HWND TabControl(HWND hWndParent, int fontSize)
+{
+    // Create the tab control
+    HWND hWndTab = CreateWindowW(
+        WC_TABCONTROLW, L"", WS_CHILD | WS_CLIPSIBLINGS | WS_VISIBLE | TCS_HOTTRACK | TCS_TABS,
+        0, 0, 400, 20, hWndParent, nullptr, nullptr, nullptr);
+    // Create a font with the desired font size
+    HFONT hFont = CreateFont(fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
+
+    // Set the font for the tab control
+    SendMessage(hWndTab, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+    // Add tabs
+    TCITEM tie;
+    tie.mask = TCIF_TEXT;
+    tie.pszText = (LPTSTR)L"Calculator";
+    TabCtrl_InsertItem(hWndTab, 0, &tie); // Add "Calculator" tab
+    tie.pszText = (LPTSTR)L"Trace Logic";
+    TabCtrl_InsertItem(hWndTab, 1, &tie); // Add "Trace Logic" tab
+
+    // Select the first tab by default
+    TabCtrl_SetCurSel(hWndTab, 0);
+
+    return hWndTab;
+}
+// Function to create the calculator display
+HWND CreateCalculatorDisplay(HWND hWndParent)
+{
+    // Create the display window (e.g., an EDIT control)
+    HWND hWndDisplay = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_RIGHT | ES_READONLY, 
+        10, 55, 275,35, hWndParent ,nullptr, nullptr, nullptr);
+
+    return hWndDisplay;
+}
+
+// Function to create the trace logic display
+HWND CreateTraceList(HWND hWndParent)
+{
+    // Create the trace logic window as a read-only, multi-line EDIT control
+    HWND hWndTraceList = CreateWindowEx(
+        WS_EX_CLIENTEDGE, // Extended window styles
+        L"EDIT", // Predefined class; EDIT control
+        L"", // Default text; control will be empty upon creation
+        WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY, // Styles
+        10, 55, 275, 258, // Position and size; x, y, width, height
+        hWndParent, // Parent window
+        (HMENU)IDC_TRACE_EDIT, // Control ID defined for later reference
+        (HINSTANCE)GetWindowLongPtr(hWndParent, GWLP_HINSTANCE), // Instance handle
+        nullptr // Pointer not needed
+    );
+    return hWndTraceList;
+}
+
+// Define a struct to hold operator and operand
+struct Token {
+    char type; // 'n' for number, '+' for addition, '-' for subtraction, '*' for multiplication, '/' for division, '%' for percentage
+    double value; // Value for numbers
+};
+void LogDecision(const std::wstring& action, const std::wstring& result = L"") {
+    if (!g_traceEnabled) return;
+
+    decisionCount++; // Increment the decision count
+    std::wstringstream logEntry;
+    logEntry << std::setw(3) << std::setfill(L'0') << decisionCount << L": " << action << L"" << result;
+    g_traceLog.push_back(logEntry.str());   
+}
+
+int precedence(wchar_t op) {
+    if (op == L'+' || op == L'-')
+        LogDecision(L"Precedence 1");
+        return 1;
+    if (op == L'*' || op == L'/' || op == L'%')
+        LogDecision(L"Precedence 2");
+        return 2;
+    return 0;
+}
+
+void applyOperation(std::stack<double>& operands, std::stack<wchar_t>& operators) {
+    double operand2 = operands.top();
+    operands.pop();
+    double operand1 = operands.top();
+    operands.pop();
+    wchar_t op = operators.top();
+    operators.pop();
+    switch (op) {
+    case L'+':
+        operands.push(operand1 + operand2);
+        LogDecision(L"Button Pressed: +");
+        break;
+    case L'-':
+        operands.push(operand1 - operand2);
+        LogDecision(L"Button Pressed: -");
+        break;
+    case L'*':
+        operands.push(operand1 * operand2);
+        LogDecision(L"Button Pressed: *");
+        break;
+    case L'/':
+        if (operand2 != 0.0) {
+            operands.push(operand1 / operand2);
+            LogDecision(L"Button Pressed: /");
+        }
+        else {
+            SetWindowTextW(g_hWndTextBox, L"Error: Division by zero.");
+            LogDecision(L"Error");
+            exit(1);
+        }
+        break;
+    }
+}
+
+void ToggleTraceState(bool enable)
+{
+    g_traceEnabled = enable;
+    // If disabling, optionally clear the log and list
+    if (!enable) {
+        LogDecision(L"Disable Trace");
+        g_traceLog.clear();
+        decisionCount = 0;
+        SetWindowText(g_hWndTraceList, L"");
+    }
+    // If enabling, make sure to populate the list if already in the Trace Logic tab
+    else if (TabCtrl_GetCurSel(hWndTabControl) == 1) {
+        LogDecision(L"Enable Trace");
+        std::wstringstream traceText;
+        for (const auto& entry : g_traceLog) {
+            traceText << entry << L"\r\n"; // Format the log entries with new lines
+        }
+        SetWindowText(g_hWndTraceList, traceText.str().c_str()); // Update the EDIT control with the trace log
+
+    }
+}
+
+// Function to handle button clicks
+void HandleButtonClick(HWND hWnd, int buttonId)
+{
+    if (g_clearDisplay) {
+        // Clear the input text and reset the flag to false
+        g_inputText.clear();
+        g_clearDisplay = false;
+        LogDecision(L"Clear Display");
+
+    }
+    if (buttonId >= 100 && buttonId <= 109) // Numbers 0-9
+    {
+        // Append the number to the input text
+        g_inputText += std::to_wstring(buttonId - 100);
+        SetWindowTextW(g_hWndTextBox, g_inputText.c_str());
+        LogDecision(L"Button Pressed: " + std::to_wstring(buttonId - 100));
+    }
+    else if (buttonId == 110) // Decimal Button
+    {
+        // Append the decimal point to the input text if not already present
+        if (g_inputText.find(L".") == std::wstring::npos)
+        {
+            g_inputText += L".";
+            SetWindowTextW(g_hWndTextBox, g_inputText.c_str());
+            LogDecision(L"Button Pressed: .");
+        }
+    }
+    else if (buttonId == 111) // C Button (Clear)
+    {
+        // Clear the input text and the text box
+        g_inputText.clear();
+        SetWindowTextW(g_hWndTextBox, g_inputText.c_str());
+        LogDecision(L"Button Pressed: C");
+
+    }
+    else if (buttonId == 112) // CE Button (Clear Entry)
+    {
+        // Remove the last character from the input text and update the text box
+        if (!g_inputText.empty())
+        {
+            g_inputText.pop_back();
+            SetWindowTextW(g_hWndTextBox, g_inputText.c_str());
+            LogDecision(L"Button Pressed: CE");
+
+        }
+    }
+    else if (buttonId >= 113 && buttonId <= 117) // Operators (+, -, *, /, %)
+    {
+        // Append the corresponding operator to the expression
+        const wchar_t operators[] = { L'+', L'-', L'*', L'/', L'%' };
+        g_inputText += operators[buttonId - 113];
+        SetWindowTextW(g_hWndTextBox, g_inputText.c_str());
+        LogDecision(L"Button Pressed: " + std::to_wstring(buttonId - 113));
+
+    }
+    else if (buttonId == 118) // Equals Button
+    {
+        std::wstring expression = g_inputText;
+        std::stack<double> operands;
+        std::stack<wchar_t> operators;
+        std::wstring currentNumber;
+        LogDecision(L"Button Pressed: =");
+
+        double originalAmount = 0.0;
+        double percentageValue = 0.0;
+
+        // Flag to check if the expression ends with an operator
+        bool endsWithOperator = false;
+
+        // Iterate over each character in the expression
+        for (wchar_t c : expression) {
+            if (isdigit(c) || (c == L'.' && currentNumber.find(L'.') == std::wstring::npos) || (c == L'-' && currentNumber.empty())) {
+                // If the character is a digit, decimal point (if not already present), or a negative sign at the start of a number
+                currentNumber += c;
+                LogDecision(L"Decimal or Negative");
+
+            }
+            else {
+                // If the character is an operator or a separator
+                if (!currentNumber.empty()) {
+                    // Convert the current number and push it onto the operands stack
+                    operands.push(std::stod(currentNumber));
+                    currentNumber.clear();
+                    LogDecision(L"Operator");
+                }
+
+                if (c == L'%') {
+                    // If percentage symbol encountered, calculate the percentage
+                    LogDecision(L"%");
+                    if (operands.empty()) {
+                        // Error: No operand before the percentage symbol
+                        SetWindowTextW(g_hWndTextBox, L"Error: Symbol without operand.");
+                        LogDecision(L"Error");
+                        return;
+                    }
+                    // Get the second operator 
+                    percentageValue = operands.top();
+                    // Get rid of it
+                    operands.pop();
+                    // Get the original amount, but do not get rid of it
+                    originalAmount = operands.top();
+                    // Getting the percentage amount, and after pushing it go to the next function and add it to the original amount that never left.
+                    double taxAmount = (originalAmount * percentageValue / 100);
+                    operands.push(taxAmount);
+                }
+                else if (c == L'+' || c == L'-' || c == L'*' || c == L'/') {
+                    LogDecision(L"Operator");
+                    // Push the operator onto the operators stack
+                    while (!operators.empty() && precedence(operators.top()) >= precedence(c)) {
+                        applyOperation(operands, operators);
+                    }
+                    operators.push(c);
+                }
+                else {
+                    // Set endsWithOperator flag if encountering a non-operator character
+                    LogDecision(L"Does not end with Operator");
+                    endsWithOperator = false;
+                }
+            }
+        }
+
+        // If there's a remaining number, push it onto the operands stack
+        if (!currentNumber.empty()) {
+            operands.push(std::stod(currentNumber));
+            LogDecision(L"Number");
+        }
+
+        // Check if the expression ends with an operator
+        if (!operands.empty() && operators.empty()) {
+            endsWithOperator = true;
+            LogDecision(L"Ends with Operator");
+        }
+
+        // Apply any remaining operations
+        while (!operators.empty()) {
+            applyOperation(operands, operators);
+        }
+
+        // If there's only one operand left and expression doesn't end with an operator, it should be the result
+        if (operands.size() == 1 && !endsWithOperator) {
+            double result = operands.top();
+            SetWindowTextW(g_hWndTextBox, std::to_wstring(result).c_str());
+            g_clearDisplay = true;
+            LogDecision(L"Result");
+        }
+        else {
+
+            // Display appropriate error message if the expression ends with an operator
+            if (endsWithOperator) {
+                SetWindowTextW(g_hWndTextBox, L"Error: Expression ends with an operator.");
+                LogDecision(L"Error");
+            }
+            else {
+                SetWindowTextW(g_hWndTextBox, L"Error: Invalid expression.");
+                LogDecision(L"Error");
+            }
+            return;
+        }
+    }
+    else if (buttonId == 119) // Intro Trace On
+    {
+        ToggleTraceState(true);
+        EnableWindow(GetDlgItem(hWnd, 119), FALSE); // Disable the 'Intro Trace On' button
+        EnableWindow(GetDlgItem(hWnd, 120), TRUE);  // Enable the 'Intro Trace Off' button
+        LogDecision(L"Button Pressed: Trace On");
+        }
+    else if (buttonId == 120) // Intro Trace Off
+    {
+        ToggleTraceState(false);
+        EnableWindow(GetDlgItem(hWnd, 119), TRUE);  // Enable the 'Intro Trace On' button
+        EnableWindow(GetDlgItem(hWnd, 120), FALSE); // Disable the 'Intro Trace Off' button
+        LogDecision(L"Button Pressed: Trace Off");
+        }
+}
+
+// Main message loop
+LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_CREATE:
+        // Create and initialize the text box
+        g_hWndTextBox = CreateWindowW(
+            L"EDIT",
+            L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER | ES_RIGHT | ES_READONLY,
+            10, 55, 275, 35, hWnd, nullptr, ((LPCREATESTRUCT)lParam)->hInstance, nullptr
+        );
+
+// 0 Button
+CreateButton(hWnd, L"0", 10, 100 + 3 * 55, 100, 45, ((LPCREATESTRUCT)lParam)->hInstance, 100);
+
+// Numbers 1-9
+for (int i = 1; i <= 9; ++i)
+{
+    CreateButton(hWnd, std::to_wstring(i).c_str(), 10 + ((i - 1) % 3) * 55, 100 + ((2 - (i - 1) / 3) * 55), 45, 45, ((LPCREATESTRUCT)lParam)->hInstance, 100 + i);
+}
+
+// Create the decimal point button
+CreateButton(hWnd, L".", 10 + 55 * 2, 100 + 3 * 55, 45, 45, ((LPCREATESTRUCT)lParam)->hInstance, 110);
+// Clear
+CreateButton(hWnd, L"C", 20 + 55 * 3, 100, 45, 45, ((LPCREATESTRUCT)lParam)->hInstance, 111);
+// Clear Entry (Backspace)
+CreateButton(hWnd, L"CE", 20 + 55 * 4, 100, 45, 45, ((LPCREATESTRUCT)lParam)->hInstance, 112);
+// Add
+CreateButton(hWnd, L"+", 20 + 55 * 3, 100 + 1*55, 45, 45, ((LPCREATESTRUCT)lParam)->hInstance, 113);
+// Subtract
+CreateButton(hWnd, L"-", 20 + 55 * 4, 100 + 1*55, 45, 45, ((LPCREATESTRUCT)lParam)->hInstance, 114);
+// Multiply
+CreateButton(hWnd, L"*", 20 + 55 * 3, 100 + 2*55, 45, 45, ((LPCREATESTRUCT)lParam)->hInstance, 115);
+// Divide
+CreateButton(hWnd, L"/", 20 + 55 * 4, 100 + 2*55, 45, 45, ((LPCREATESTRUCT)lParam)->hInstance, 116);
+// Mod
+CreateButton(hWnd, L"%", 20 + 55 * 4, 100 + 3 * 55, 45, 45, ((LPCREATESTRUCT)lParam)->hInstance, 117);
+// Equals
+CreateButton(hWnd, L"=", 20 + 55 * 3, 100 + 3*55, 45, 45, ((LPCREATESTRUCT)lParam)->hInstance, 118);
+// Trace On button 
+CreateButtonWithCustomFontSize(hWnd, L"Intro Trace On", 130, 20, 75, 25, 13, ((LPCREATESTRUCT)lParam)->hInstance, 119);
+
+// Trace Off button 
+CreateButtonWithCustomFontSize(hWnd, L"Intro Trace Off", 210, 20, 75, 25, 13, ((LPCREATESTRUCT)lParam)->hInstance, 120);
+// Create the calculator display
+g_hWndCalcDisplay = CreateCalculatorDisplay(hWnd);
+// Create the trace logic display
+g_hWndTraceList = CreateTraceList(hWnd);
+// Create the tab control (ensure it's created last)
+hWndTabControl = TabControl(hWnd, 13);
+
+// Initially hide the trace logic display
+ShowWindow(g_hWndTraceList, SW_HIDE);
+
+
+// Set focus to the calculator tab
+SetFocus(hWndTabControl);
+
+break;
+    case WM_COMMAND:
+    {
+        LogDecision(L"Command");
+        int wmId = LOWORD(wParam);
+        // Handle button clicks
+        HandleButtonClick(hWnd, wmId);
+    }
+    break;
+    case WM_NOTIFY:
+    {
+        LPNMHDR pnmh = (LPNMHDR)lParam;
+        if (pnmh->hwndFrom == hWndTabControl && pnmh->code == TCN_SELCHANGE) // Tab selection changed
+        {
+            int selectedTab = TabCtrl_GetCurSel(hWndTabControl); // Get the current tab
+
+            if (selectedTab == 0) // Calculator tab selected
+            {
+                g_traceLog.clear();
+                ShowWindow(g_hWndTraceList, SW_HIDE); // Hide trace logic list
+                SetWindowPos(g_hWndTraceList, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                ShowWindow(g_hWndCalcDisplay, SW_SHOW); // Show calculator display
+                EnableWindow(g_hWndTextBox, TRUE); // Re-enabling to prevent being able to see it while in trace logic.
+                // Ensure all calculator buttons are shown, loop through their IDs
+                for (int btnID = 100; btnID <= 118; btnID++)
+                    ShowWindow(GetDlgItem(hWnd, btnID), SW_SHOW);
+            }
+            else if (selectedTab == 1) // Trace Logic tab selected
+            {
+                ShowWindow(g_hWndCalcDisplay, SW_HIDE); // Hide calculator display
+                ShowWindow(g_hWndTraceList, SW_SHOW); // Show Trace List display
+                EnableWindow(g_hWndTextBox, FALSE); // Disable the calculator display to prevent interaction
+                // Ensure all calculator buttons are hidden, loop through their IDs`
+                for (int btnID = 100; btnID <= 118; btnID++)
+                    ShowWindow(GetDlgItem(hWnd, btnID), SW_HIDE);
+                // Log decisions
+                // Prepare and set the text for the trace logic EDIT control
+                std::wstringstream traceText;
+                for (const auto& entry : g_traceLog) {
+                    traceText << entry << L"\r\n"; // Collect all log entries
+                }
+                SetWindowText(g_hWndTraceList, traceText.str().c_str()); // Update the EDIT control
+
+            }
+        }
+        InvalidateRect(hWnd, NULL, TRUE); // Invalidate the entire client area
+        UpdateWindow(hWnd); // Immediately repaint the invalidated area
+    } break;
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        break;
+    default:
+        return DefWindowProc(hWnd, message, wParam, lParam);
+        break;
+    }
+    return 0;
+}
+
+int WINAPI wWinMain(
+    HINSTANCE hInstance,
+    HINSTANCE hPrevInstance,
+    LPWSTR lpCmdLine,
+    int nCmdShow
+)
+{
+    // Initialize common controls to use modern UI elements like tabs.
+    INITCOMMONCONTROLSEX icex = { 0 };
+    icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
+    icex.dwICC = ICC_TAB_CLASSES;
+    InitCommonControlsEx(&icex);
+    // Register the window class
+    const wchar_t CLASS_NAME[] = L"Sample Window Class";
+
+    WNDCLASS wc = {};
+
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInstance;
+    wc.lpszClassName = CLASS_NAME;
+
+    RegisterClass(&wc);
+
+    // Create the window
+    HWND hWnd = CreateWindowEx(0, CLASS_NAME, L"Calculator", WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, CW_USEDEFAULT, 310, 365, NULL, NULL, hInstance, NULL);
+
+    if (!hWnd)
+    {
+        return FALSE;
+    }
+
+    ShowWindow(hWnd, nCmdShow);
+    UpdateWindow(hWnd);
+
+    // Main message loop
+    MSG msg;
+    while (GetMessage(&msg, nullptr, 0, 0))
+    {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    return (int)msg.wParam;
+}
